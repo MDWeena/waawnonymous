@@ -1,4 +1,4 @@
-const {globalVariables} = require('./config/configuration')
+const {globalVariables} = require('./config/configuration');
 const express = require('express');
 const path = require('path');
 const ejs = require('ejs');
@@ -14,6 +14,9 @@ const bcrypt = require('bcryptjs');
 const passport = require('passport');
 const LocalStrategy = require('passport-local').Strategy;
 const User = require('./models/Users');
+const Campaign = require('./models/Campaign')
+const {isLoggedIn} = require('./config/authorizations');
+const randomstring = require('randomstring')
 
 const app = express();
 
@@ -82,26 +85,37 @@ app.use(flash());
 app.use(globalVariables);
 
 app.get('/', async (req, res) => {
-    let allmessages = await Message.find({}).sort({_id:-1})
-    console.log(allmessages);
-    res.render('index', {messages: allmessages});
+    res.redirect('/user/login');
 });
 
-app.post('/message/create-message', async (req, res, next) =>{
+app.post('/campaign/campaign-message/:campaignId', async (req, res, next) =>{
     let {message} = req.body;
-
+    const campaignId = req.params.campaignId
     if(!message){
         req.flash('error-message', "Please enter a message");
-       return res.redirect('/');
+       return res.redirect('back');
     }
     let newMessage = new Message({
         message
     });
     console.log(message);
     await newMessage.save()
-    .then(() => {
-        req.flash('success-message', 'Message created succesfully')
-        res.redirect('/')
+    .then( async () => {
+        const newMessageId = newMessage._id;
+        let campaignExist = await Campaign.findById(campaignId);
+        if(!campaignExist){
+            req.flash('error-message', 'Something went wrong')
+            return res.redirect('back')
+        }
+        campaignExist.messages.push(newMessageId)
+        await campaignExist.save();
+        if(!campaignExist){
+            req.flash('error-message', 'Something went wrong')
+            return res.redirect('back')
+        }
+        console.log(campaignExist);
+        req.flash('success-message', 'Message sent succesfully')
+        return res.redirect('back')
     })
     .catch((error) => {
         req.flash('error-message', error.message)
@@ -162,11 +176,14 @@ app.post('/user/register', async (req, res) => {
 });
 
 app.get('/user/login', (req, res) => {
+    if (req.user) return res.redirect('/user/profile')
     res.render('login');
 })
 
-app.get('/user/profile', (req, res) => {
-    res.render('profile');
+app.get('/user/profile', isLoggedIn, async (req, res) => {
+    let userCampaigns = await Campaign.find({ user: req.user._id}).populate('user messages');
+    console.log(userCampaigns);
+    res.render('profile', {userCampaigns});
 });
 
 app.post('/user/login', passport.authenticate('local', {
@@ -177,6 +194,42 @@ app.post('/user/login', passport.authenticate('local', {
     session: true,
     })
 );
+
+app.get('/campaign/create-campaign', isLoggedIn, (req, res) => {
+    res.render('createCampaign');
+});
+
+app.post('/campaign/create-campaign', isLoggedIn, async(req, res) => {
+    console.log(req.body);
+    let loggedInUser = req.user
+    let {title} = req.body;
+    let campLink = `${req.headers.origin}/campaign/single-campaign/${randomstring.generate()}`;
+    let newCampaign = new Campaign({
+        title,
+        user: loggedInUser._id,
+        link: campLink,
+    });
+    
+    await newCampaign.save();
+    if (!newCampaign){
+        req.flash('error-message', 'An error occured while creating campaign');
+        return res.redirect('back');
+    }
+
+    req.flash('success-message', 'Campaign created succesfully');
+    return res.redirect('back');
+});
+
+app.get('/campaign/single-campaign/:campaignId', async (req, res) => {
+    const singleCampaign = await Campaign.findOne({link: `http://localhost:${port}/campaign/single-campaign/${req.params.campaignId}`})
+    .populate('user');
+
+    if (!singleCampaign){
+        console.log('Wrong');
+        req.flash('error_message', 'invalid campaign link')
+    }
+    return res.render('campaignMessage', {singleCampaign})
+});
 
 app.get('/user/logout', (req, res) => {
     req.logOut();
